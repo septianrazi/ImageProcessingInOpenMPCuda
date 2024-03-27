@@ -1,0 +1,13 @@
+g++ opencv-omp-basic.cpp -fopenmp `pkg-config opencv4 --cflags` -c
+g++ opencv-omp-basic.o  -fopenmp `pkg-config opencv4 --libs` -lstdc++ -o opencv-omp-basic
+
+g++ opencv-omp-basic-color.cpp -fopenmp `pkg-config opencv4 --cflags` -c
+g++ opencv-omp-basic-color.o  -fopenmp `pkg-config opencv4 --libs` -lstdc++ -o opencv-omp-basic-color
+
+g++ opencv-omp-basic-2.cpp -fopenmp `pkg-config opencv4 --cflags` -c
+g++ opencv-omp-basic-2.o  -fopenmp `pkg-config opencv4 --libs` -lstdc++ -o opencv-omp-basic-2
+
+g++ opencv-omp-histogram.cpp -fopenmp `pkg-config opencv4 --cflags` -c
+g++ opencv-omp-histogram.o  -fopenmp `pkg-config opencv4 --libs` -lstdc++ -o opencv-omp-histogram
+
+
