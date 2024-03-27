@@ -1,0 +1,5 @@
+# Ignore files without an extension
+*.
+
+# Ignore files with .o extension
+*.o
