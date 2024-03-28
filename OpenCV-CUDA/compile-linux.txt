@@ -1,0 +1,9 @@
+/usr/local/cuda-11.6/bin/nvcc imagecuda-linux.cu `pkg-config opencv4 --cflags --libs` -o imagecuda
+
+/usr/local/cuda-11.6/bin/nvcc image.cu `pkg-config opencv4 --cflags --libs` imagecpp-linux.cpp -o imagecuda
+
+/usr/local/cuda-11.6/bin/nvcc imagePDE.cu `pkg-config opencv4 --cflags --libs` imagecpp-linuxPDE.cpp -o imagePDEcuda
+
+/usr/local/cuda-11.6/bin/nvcc addvector.cu -o addvector
+
+/usr/local/cuda-11.6/bin/nvcc transpose.cu -o transpose

@@ -23,7 +23,7 @@ int main(int argc, char **argv)
       for (int j = 0; j < source.cols; j++)
         for (int c = 0; c < 3; c++)
         {
-          destination(i, j)[c] = 255.0 * tan((255 - source(i, j)[c]) / 255.0);
+          destination(i, j)[c] = 255.0 * cos((255 - source(i, j)[c]) / 255.0);
         }
   }
 
