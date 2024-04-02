@@ -1,9 +1,18 @@
 /usr/local/cuda-11.6/bin/nvcc imagecuda-linux.cu `pkg-config opencv4 --cflags --libs` -o imagecuda
+./imagecuda painting.tif
 
 /usr/local/cuda-11.6/bin/nvcc image.cu `pkg-config opencv4 --cflags --libs` imagecpp-linux.cpp -o imagecuda
+./imagecuda painting.tif
 
 /usr/local/cuda-11.6/bin/nvcc imagePDE.cu `pkg-config opencv4 --cflags --libs` imagecpp-linuxPDE.cpp -o imagePDEcuda
+./imagePDEcuda painting.tif
 
 /usr/local/cuda-11.6/bin/nvcc addvector.cu -o addvector
+./addvector
 
 /usr/local/cuda-11.6/bin/nvcc transpose.cu -o transpose
+./transpose
+
+
+/usr/local/cuda-11.6/bin/nvcc ex1_anaglyph_gaussian.cu `pkg-config opencv4 --cflags --libs` -o ex1
+./ex1 ../test_stereo.jpg
