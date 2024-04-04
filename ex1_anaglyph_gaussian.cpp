@@ -1,7 +1,8 @@
 #include <iostream>
 #include <opencv2/opencv.hpp>
 #include <cmath>
-#include <chrono> // for high_resolution_clock
+#include <chrono>  // for high_resolution_clock
+#include <fstream> // for file operations
 
 using namespace std;
 
@@ -65,7 +66,7 @@ float gaussian(float x, float sigma)
   return 1 / (sqrt(2 * M_PI) * sigma) * exp(-x * x / (2 * sigma * sigma));
 }
 
-cv::Vec3b gaussianProcess(int i, int j, cv::Mat_<cv::Vec3b> source, bool isLeftImage, int kernelSize = 10, float sigma = 2.0)
+cv::Vec3b gaussianProcess(int i, int j, cv::Mat_<cv::Vec3b> source, bool isLeftImage, int kernelSize = 4, float sigma = 2.0)
 {
   float counter = 0;
 
@@ -95,7 +96,7 @@ cv::Vec3b gaussianProcess(int i, int j, cv::Mat_<cv::Vec3b> source, bool isLeftI
   return result / counter;
 }
 
-cv::Vec3b covarianceGaussianProcess(int i, int j, cv::Mat_<cv::Vec3b> source, bool isLeftImage, int nbhoodSize = 5, float factorRatio = 9, int baseGaussianKernel = 1)
+cv::Vec3b denoisingProcess(int i, int j, cv::Mat_<cv::Vec3b> source, bool isLeftImage, int nbhoodSize = 8, float factorRatio = 60, int baseGaussianKernel = 1)
 {
   float counter = 0;
 
@@ -155,35 +156,44 @@ cv::Vec3b covarianceGaussianProcess(int i, int j, cv::Mat_<cv::Vec3b> source, bo
     covariance(0, 0) += (redValues[i] - redMean) * (redValues[i] - redMean);
     covariance(0, 1) += (redValues[i] - redMean) * (greenValues[i] - greenMean);
     covariance(0, 2) += (redValues[i] - redMean) * (blueValues[i] - blueMean);
-    covariance(1, 0) += (greenValues[i] - greenMean) * (redValues[i] - redMean); // redundant?
+    covariance(1, 0) += (greenValues[i] - greenMean) * (redValues[i] - redMean);
     covariance(1, 1) += (greenValues[i] - greenMean) * (greenValues[i] - greenMean);
     covariance(1, 2) += (greenValues[i] - greenMean) * (blueValues[i] - blueMean);
-    covariance(2, 0) += (blueValues[i] - blueMean) * (redValues[i] - redMean);     // redundant?
-    covariance(2, 1) += (blueValues[i] - blueMean) * (greenValues[i] - greenMean); // redundant?
+    covariance(2, 0) += (blueValues[i] - blueMean) * (redValues[i] - redMean);
+    covariance(2, 1) += (blueValues[i] - blueMean) * (greenValues[i] - greenMean);
     covariance(2, 2) += (blueValues[i] - blueMean) * (blueValues[i] - blueMean);
   }
 
   covariance /= nbHoodArea;
+  // covariance /= 255;
 
   // calculate determinant
   float det = cv::determinant(covariance);
+  det = std::abs(det);
 
   // cout << "Covariance: " << covariance << endl;
-  // cout << "Determinant: " << det << endl;
+  // cout << "Det " << det << endl;
 
   // calculate gaussian
-  float gaussianValue = baseGaussianKernel + exp(-det / factorRatio);
+  // float gaussianValue = baseGaussianKernel + exp(-det / factorRatio);
+  // float gaussianValue = factorRatio / (baseGaussianKernel + 1000 * pow(det, 3));
+  float gaussianValue = factorRatio / (baseGaussianKernel + max(0.0f, log(det)));
   // float gaussianValue = factorRatio * pow(det, 0.5) + baseGaussianKernel;
 
   // cout << "Gaussian: " << gaussianValue << endl;
+
+  // if (gaussianValue < 0.0 || gaussianValue > 30)
+  //   cout << "Gaussian: " << gaussianValue << " \t Det " << det << endl;
   cv::Vec3b result = gaussianProcess(i, j, source, isLeftImage, gaussianValue, 2.0);
+  // cv::Vec3b result = cv::Vec3b(150 * det, 0, 0);
+  // cv::Vec3b result = cv::Vec3b(0, 30 * gaussianValue, 0);
 
   return result;
 }
 
 bool enableGaussian = false;
-bool enbleCovarianceGaussian = true;
-bool enableAnaglyph = true;
+bool enableDenoising = true;
+bool enableAnaglyph = false;
 
 int main(int argc, char **argv)
 {
@@ -209,10 +219,10 @@ int main(int argc, char **argv)
       for (int c = 0; c < 3; c++)
       {
 
-        if (enbleCovarianceGaussian)
+        if (enableDenoising)
         {
-          pixelLeft = covarianceGaussianProcess(i, j, source, true);
-          pixelRight = covarianceGaussianProcess(i, j + res_cols, source, false);
+          pixelLeft = denoisingProcess(i, j, source, true);
+          pixelRight = denoisingProcess(i, j + res_cols, source, false);
           break;
         }
         else if (enableGaussian)
@@ -231,12 +241,12 @@ int main(int argc, char **argv)
       // #pragma omp critical
       if (enableAnaglyph)
         // destination(i, j) = trueAnaglyph(pixelLeft, pixelRight);
-        // destination(i, j) = greyAnaglyph(pixelLeft, pixelRight);
-        destination(i, j) = colourAnaglyph(pixelLeft, pixelRight);
+        destination(i, j) = greyAnaglyph(pixelLeft, pixelRight);
+      // destination(i, j) = colourAnaglyph(pixelLeft, pixelRight);
       // destination(i, j) = halfColourAnaglyph(pixelLeft, pixelRight);
       // destination(i, j) = optimisedAnaglyph(pixelLeft, pixelRight);
       else // if no anaglyph
-        // destination(i, j) = pixelLeft;
+           // destination(i, j) = pixelLeft;
         destination(i, j) = pixelRight;
     }
   // }
