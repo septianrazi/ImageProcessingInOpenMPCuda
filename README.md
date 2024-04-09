@@ -25,6 +25,7 @@ Most of the code to accomplish this was done using fragment shader in the index.
 - [ex2_shared_memory](ex2_shared_memory.cu) for CUDA implementation using Shared Memory
 
 ##### Exercise 3:
+- [ex3_runtimes.xlsx](ex3_runtimes.xlsx) for IPS runtimes of our different image processing techniques
 
 
 ## Prerequisites
