@@ -12,6 +12,18 @@
 
 using namespace std;
 
+// default values for arguments
+bool enableAnaglyph = false;
+__device__ int anaglyphValue = 1;
+
+bool enableGaussian = false;
+__device__ int gausKernel = 4;
+__device__ float gausSigma = 2.0;
+
+bool enableDenoising = false;
+__device__ int denoisingNbhoodSize = 8;
+__device__ float denoisingFactorRatio = 60;
+
 __device__ void invert(const cv::cuda::PtrStep<uchar3> src, cv::cuda::PtrStep<uchar3> dst, int rows, int cols)
 {
   const int dst_x = blockDim.x * blockIdx.x + threadIdx.x;
@@ -125,19 +137,12 @@ __device__ uchar3 denoisingProcess(int i, int j, const cv::cuda::PtrStep<uchar3>
   int imageLimit = isLeftImage ? cols / 2 : cols;
 
   float covariance[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
-  // cv::Mat_<float> covariance = cv::Mat_<float>::zeros(3, 3);
 
+  // max neighbourhood number is 10 because of array size
+  if (nbhoodSize > 10)
+    nbhoodSize = 10;
   const int nbHoodArea = nbhoodSize * nbhoodSize;
-
-  // float *redValues;
-  // float *greenValues;
-  // float *blueValues;
-
-  // cudaMalloc(&redValues, nbHoodArea * sizeof(float));
-  // cudaMalloc(&greenValues, nbHoodArea * sizeof(float));
-  // cudaMalloc(&blueValues, nbHoodArea * sizeof(float));
-
-  float redValues[100]; // max neighbourhood number is 10 then
+  float redValues[100];
   float greenValues[100];
   float blueValues[100];
   float redMean = 0;
@@ -214,11 +219,8 @@ __device__ uchar3 denoisingProcess(int i, int j, const cv::cuda::PtrStep<uchar3>
   return result;
 }
 
-__global__ void process(const cv::cuda::PtrStep<uchar3> src, cv::cuda::PtrStep<uchar3> dst, int rows, int cols)
+__global__ void process(const cv::cuda::PtrStep<uchar3> src, cv::cuda::PtrStep<uchar3> dst, int rows, int cols, bool enableAnaglyph, bool enableGaussian, bool enableDenoising)
 {
-  bool enableAnaglyph = false;
-  bool enableGaussian = false;
-  bool enableDenoising = true;
 
   const int dst_x = blockDim.x * blockIdx.x + threadIdx.x;
   const int dst_y = blockDim.y * blockIdx.y + threadIdx.y;
@@ -230,8 +232,8 @@ __global__ void process(const cv::cuda::PtrStep<uchar3> src, cv::cuda::PtrStep<u
 
     if (enableDenoising)
     {
-      int nbhoodSize = 8;
-      float factorRatio = 60;
+      int nbhoodSize = denoisingNbhoodSize;
+      float factorRatio = denoisingFactorRatio;
       int baseGaussianKernel = 1;
 
       dst(dst_y, dst_x) = denoisingProcess(dst_y, dst_x, src, rows, cols, true, nbhoodSize, factorRatio, baseGaussianKernel);
@@ -242,8 +244,8 @@ __global__ void process(const cv::cuda::PtrStep<uchar3> src, cv::cuda::PtrStep<u
     }
     else if (enableGaussian)
     {
-      int kernelSize = 10;
-      float sigma = 2.0;
+      int kernelSize = gausKernel;
+      float sigma = gausSigma;
 
       dst(dst_y, dst_x) = gaussianPixel(src, rows, cols, dst_y, dst_x, true, kernelSize, sigma);
       dst(dst_y, cols / 2 + dst_x) = gaussianPixel(src, rows, cols, dst_y, cols / 2 + dst_x, false, kernelSize, sigma);
@@ -254,11 +256,24 @@ __global__ void process(const cv::cuda::PtrStep<uchar3> src, cv::cuda::PtrStep<u
 
     if (enableAnaglyph)
     {
-      dst(dst_y, dst_x) = trueAnaglyph(left, right);
-      // dst(dst_y, dst_x) = greyAnaglyph(left, right);
-      // dst(dst_y, dst_x) = colourAnaglyph(left, right);
-      // dst(dst_y, dst_x) = halfColourAnaglyph(left, right);
-      // dst(dst_y, dst_x) = optimisedAnaglyph(left, right);
+      switch (anaglyphValue)
+      {
+      case 1:
+        dst(dst_y, dst_x) = trueAnaglyph(left, right);
+        break;
+      case 2:
+        dst(dst_y, dst_x) = greyAnaglyph(left, right);
+        break;
+      case 3:
+        dst(dst_y, dst_x) = colourAnaglyph(left, right);
+        break;
+      case 4:
+        dst(dst_y, dst_x) = halfColourAnaglyph(left, right);
+        break;
+      case 5:
+        dst(dst_y, dst_x) = optimisedAnaglyph(left, right);
+        break;
+      }
     }
   }
 }
@@ -270,14 +285,86 @@ int divUp(int a, int b)
 
 void processCUDA(cv::cuda::GpuMat &src, cv::cuda::GpuMat &dst)
 {
-  const dim3 block(32, 8);
+  const dim3 block(64, 8);
   const dim3 grid(divUp(dst.cols, block.x), divUp(dst.rows, block.y));
 
-  process<<<grid, block>>>(src, dst, dst.rows, dst.cols);
+  process<<<grid, block>>>(src, dst, dst.rows, dst.cols, enableAnaglyph, enableGaussian, enableDenoising);
 }
+
+// default values for arguments
+int hostAnaglyphValue = 1;
+
+int hostGausKernel = 4;
+float hostGausSigma = 2.0;
+
+int hostDenoisingNbhoodSize = 8;
+float hostDenoisingFactorRatio = 60;
 
 int main(int argc, char **argv)
 {
+  if (argc > 2)
+  {
+    for (int i = 2; i < argc; i++)
+    {
+      string arg = argv[i];
+      if (arg == "-gaussian" || arg == "-g")
+      {
+        enableGaussian = true;
+        if (i + 2 < argc && std::isdigit(*argv[i + 1]) && std::isdigit(*argv[i + 2])) // Ensure we have two numerical values after the argument
+        {
+          hostGausKernel = std::stod(argv[i + 1]); // Convert the next argument to a double
+          hostGausSigma = std::stod(argv[i + 2]);  // Convert the argument after that to a double
+          i += 2;                                  // Skip the next two arguments since we just processed them
+        }
+        cudaMemcpyToSymbol(gausKernel, &hostGausKernel, sizeof(int));
+        cudaMemcpyToSymbol(gausSigma, &hostGausSigma, sizeof(float));
+      }
+      else if (arg == "-anaglyph" || arg == "-a")
+      {
+        enableAnaglyph = true;
+        if (i + 1 < argc && std::isdigit(*argv[i + 1])) // Ensure we have a value after the argument
+        {
+          hostAnaglyphValue = std::stod(argv[i + 1]); // Convert the next argument to a double
+          i++;                                        // Skip the next argument since we just processed it
+        }
+        cudaMemcpyToSymbol(anaglyphValue, &hostAnaglyphValue, sizeof(int));
+      }
+      else if (arg == "-denoising" || arg == "-d")
+      {
+        enableDenoising = true;
+        if (i + 2 < argc && std::isdigit(*argv[i + 1]) && std::isdigit(*argv[i + 2])) // Ensure we have two numerical values after the argument
+        {
+          int hostDenoisingNbhoodSize = std::stod(argv[i + 1]);    // Convert the next argument to a double
+          float hostDenoisingFactorRatio = std::stod(argv[i + 2]); // Convert the argument after that to a double
+          i += 2;                                                  // Skip the next two arguments since we just processed them
+        }
+        cudaMemcpyToSymbol(denoisingNbhoodSize, &hostDenoisingNbhoodSize, sizeof(int));
+        cudaMemcpyToSymbol(denoisingFactorRatio, &hostDenoisingFactorRatio, sizeof(float));
+      }
+
+      else if (arg == "-h" || arg == "--help")
+      {
+        std::cout << "Usage: program imagePath [-g gaussianKernel gaussianSigma] [-a anaglyphValue] [-d denoisingNbhoodSize denoisingFactorRatio]\n";
+        std::cout << "Options:\n";
+        std::cout << "  -g, --gaussian     Enable Gaussian filter with specified kernel and sigma\n";
+        std::cout << "                      kernel: size of the Gaussian kernel (int, default: 4)\n";
+        std::cout << "                      sigma: standard deviation of the Gaussian distribution (double, default: 2.0)\n";
+        std::cout << "  -a, --anaglyph     Enable Anaglyph with specified value\n";
+        std::cout << "                      anaglyphValue: value for the Anaglyph effect (int, default: 1)\n";
+        std::cout << "                        1: True Anaglyph\n";
+        std::cout << "                        2: Grey Anaglyph\n";
+        std::cout << "                        3: Color Anaglyph\n";
+        std::cout << "                        4: Half-Color Anaglyph\n";
+        std::cout << "                        5: Optimised Anaglyph\n";
+        std::cout << "  -d, --denoising    Enable Denoising with specified neighborhood size and factor ratio\n";
+        std::cout << "                      neighbourhood size: size of the neighborhood for denoising (int, default: 8)\n";
+        std::cout << "                      factor ratio: factor ratio for denoising (double, default: 60)\n";
+        std::cout << "  -h, --help         Display this help message and exit\n";
+        return 0;
+      }
+    }
+  }
+
   cv::namedWindow("Original Image", cv::WINDOW_OPENGL | cv::WINDOW_AUTOSIZE);
   cv::namedWindow("Processed Image", cv::WINDOW_OPENGL | cv::WINDOW_AUTOSIZE);
 
@@ -294,7 +381,7 @@ int main(int argc, char **argv)
   cv::imshow("Original Image", h_img);
 
   auto begin = chrono::high_resolution_clock::now();
-  const int iter = 1; // 100000;
+  const int iter = 1;
 
   for (int i = 0; i < iter; i++)
   {
