@@ -191,9 +191,17 @@ cv::Vec3b denoisingProcess(int i, int j, cv::Mat_<cv::Vec3b> source, bool isLeft
   return result;
 }
 
-bool enableGaussian = false;
-bool enableDenoising = true;
+// default values for arguments
 bool enableAnaglyph = false;
+int anaglyphValue = 1;
+
+bool enableGaussian = false;
+int gausKernel = 4;
+float gausSigma = 2.0;
+
+bool enableDenoising = false;
+int denoisingNbhoodSize = 8;
+float denoisingFactorRatio = 60;
 
 int main(int argc, char **argv)
 {
@@ -205,51 +213,122 @@ int main(int argc, char **argv)
   cv::imshow("Source Image", source);
 
   auto begin = chrono::high_resolution_clock::now();
-  const int iter = 500;
+  const int iter = 1;
 
-  // for (int it = 0; it < iter; it++)
-  // {
-#pragma omp parallel for
-  for (int i = 0; i < source.rows; i++)
-    for (int j = 0; j < res_cols; j++)
+  if (argc > 2)
+  {
+    for (int i = 2; i < argc; i++)
     {
-      cv::Vec3b pixelLeft;
-      cv::Vec3b pixelRight;
-
-      for (int c = 0; c < 3; c++)
+      string arg = argv[i];
+      if (arg == "-gaussian" || arg == "-g")
       {
-
-        if (enableDenoising)
+        enableGaussian = true;
+        if (i + 2 < argc && std::isdigit(*argv[i + 1]) && std::isdigit(*argv[i + 2])) // Ensure we have two numerical values after the argument
         {
-          pixelLeft = denoisingProcess(i, j, source, true);
-          pixelRight = denoisingProcess(i, j + res_cols, source, false);
-          break;
+          gausKernel = std::stod(argv[i + 1]); // Convert the next argument to a double
+          gausSigma = std::stod(argv[i + 2]);  // Convert the argument after that to a double
+          i += 2;                              // Skip the next two arguments since we just processed them
         }
-        else if (enableGaussian)
+      }
+      else if (arg == "-anaglyph" || arg == "-a")
+      {
+        enableAnaglyph = true;
+        if (i + 1 < argc && std::isdigit(*argv[i + 1])) // Ensure we have a value after the argument
         {
-          pixelLeft = gaussianProcess(i, j, source, true);
-          pixelRight = gaussianProcess(i, j + res_cols, source, false);
-          break;
+          anaglyphValue = std::stod(argv[i + 1]); // Convert the next argument to a double
+          i++;                                    // Skip the next argument since we just processed it
         }
-        else
+      }
+      else if (arg == "-denoising" || arg == "-d")
+      {
+        enableDenoising = true;
+        if (i + 2 < argc && std::isdigit(*argv[i + 1]) && std::isdigit(*argv[i + 2])) // Ensure we have two numerical values after the argument
         {
-          pixelLeft[c] = source(i, j)[c];
-          pixelRight[c] = source(i, j + res_cols)[c];
+          denoisingNbhoodSize = std::stod(argv[i + 1]);  // Convert the next argument to a double
+          denoisingFactorRatio = std::stod(argv[i + 2]); // Convert the argument after that to a double
+          i += 2;                                        // Skip the next two arguments since we just processed them
         }
       }
 
-      // #pragma omp critical
-      if (enableAnaglyph)
-        // destination(i, j) = trueAnaglyph(pixelLeft, pixelRight);
-        destination(i, j) = greyAnaglyph(pixelLeft, pixelRight);
-      // destination(i, j) = colourAnaglyph(pixelLeft, pixelRight);
-      // destination(i, j) = halfColourAnaglyph(pixelLeft, pixelRight);
-      // destination(i, j) = optimisedAnaglyph(pixelLeft, pixelRight);
-      else // if no anaglyph
-           // destination(i, j) = pixelLeft;
-        destination(i, j) = pixelRight;
+      else if (arg == "-h" || arg == "--help")
+      {
+        std::cout << "Usage: program imagePath [-g gaussianKernel gaussianSigma] [-a anaglyphValue] [-d denoisingNbhoodSize denoisingFactorRatio]\n";
+        std::cout << "Options:\n";
+        std::cout << "  -g, --gaussian     Enable Gaussian filter with specified kernel and sigma\n";
+        std::cout << "                      kernel: size of the Gaussian kernel (int, default: 4)\n";
+        std::cout << "                      sigma: standard deviation of the Gaussian distribution (double, default: 2.0)\n";
+        std::cout << "  -a, --anaglyph     Enable Anaglyph with specified value\n";
+        std::cout << "                      anaglyphValue: value for the Anaglyph effect (int, default: 1)\n";
+        std::cout << "                        1: True Anaglyph\n";
+        std::cout << "                        2: Grey Anaglyph\n";
+        std::cout << "                        3: Color Anaglyph\n";
+        std::cout << "                        4: Half-Color Anaglyph\n";
+        std::cout << "                        5: Optimised Anaglyph\n";
+        std::cout << "  -d, --denoising    Enable Denoising with specified neighborhood size and factor ratio\n";
+        std::cout << "                      neighbourhood size: size of the neighborhood for denoising (int, default: 8)\n";
+        std::cout << "                      factor ratio: factor ratio for denoising (double, default: 60)\n";
+        std::cout << "  -h, --help         Display this help message and exit\n";
+        return 0;
+      }
     }
-  // }
+  }
+
+  for (int it = 0; it < iter; it++)
+  {
+#pragma omp parallel for
+    for (int i = 0; i < source.rows; i++)
+      for (int j = 0; j < res_cols; j++)
+      {
+        cv::Vec3b pixelLeft;
+        cv::Vec3b pixelRight;
+
+        for (int c = 0; c < 3; c++)
+        {
+
+          if (enableGaussian)
+          {
+            pixelLeft = gaussianProcess(i, j, source, true, gausKernel, gausSigma);
+            pixelRight = gaussianProcess(i, j + res_cols, source, false, gausKernel, gausSigma);
+            break;
+          }
+          else if (enableDenoising)
+          {
+            pixelLeft = denoisingProcess(i, j, source, true, denoisingNbhoodSize, denoisingFactorRatio);
+            pixelRight = denoisingProcess(i, j + res_cols, source, false, denoisingNbhoodSize, denoisingFactorRatio);
+            break;
+          }
+          else
+          {
+            pixelLeft[c] = source(i, j)[c];
+            pixelRight[c] = source(i, j + res_cols)[c];
+          }
+        }
+
+        // #pragma omp critical
+        if (enableAnaglyph)
+          switch (anaglyphValue)
+          {
+          case 1:
+            destination(i, j) = trueAnaglyph(pixelLeft, pixelRight);
+            break;
+          case 2:
+            destination(i, j) = greyAnaglyph(pixelLeft, pixelRight);
+            break;
+          case 3:
+            destination(i, j) = colourAnaglyph(pixelLeft, pixelRight);
+            break;
+          case 4:
+            destination(i, j) = halfColourAnaglyph(pixelLeft, pixelRight);
+            break;
+          case 5:
+            destination(i, j) = optimisedAnaglyph(pixelLeft, pixelRight);
+            break;
+          }
+        else // if no anaglyph
+             // destination(i, j) = pixelLeft;
+          destination(i, j) = pixelRight;
+      }
+  }
 
   auto end = std::chrono::high_resolution_clock::now();
   std::chrono::duration<double> diff = end - begin;
