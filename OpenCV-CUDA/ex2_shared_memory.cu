@@ -12,6 +12,9 @@
 
 using namespace std;
 
+#define BLOCK_DIM 16
+#define MAX_KERNEL_SIZE 10
+
 // default values for arguments
 bool enableAnaglyph = false;
 __device__ int anaglyphValue = 1;
@@ -24,14 +27,14 @@ bool enableDenoising = false;
 __device__ int denoisingNbhoodSize = 8;
 __device__ float denoisingFactorRatio = 60;
 
-__device__ void invert(const cv::cuda::PtrStep<uchar3> src, cv::cuda::PtrStep<uchar3> dst, int rows, int cols)
+__device__ void invert(const uchar3 src[BLOCK_DIM + MAX_KERNEL_SIZE][BLOCK_DIM + MAX_KERNEL_SIZE], cv::cuda::PtrStep<uchar3> dst, int rows, int cols)
 {
   const int dst_x = blockDim.x * blockIdx.x + threadIdx.x;
   const int dst_y = blockDim.y * blockIdx.y + threadIdx.y;
 
   if (dst_x < cols && dst_y < rows)
   {
-    uchar3 val = src(dst_y, dst_x);
+    uchar3 val = src[dst_y][dst_x];
     dst(dst_y, dst_x).x = 255 - val.x;
     dst(dst_y, dst_x).y = 255 - val.y;
     dst(dst_y, dst_x).z = 255 - val.z;
@@ -88,7 +91,7 @@ __device__ float gaussian(float x, float sigma)
   return 1 / (sqrt(2 * M_PI) * sigma) * exp(-x * x / (2 * sigma * sigma));
 }
 
-__device__ uchar3 gaussianPixel(const cv::cuda::PtrStep<uchar3> src, int rows, int cols, int i, int j, bool isLeftImage, int kernelSize, float sigma)
+__device__ uchar3 gaussianPixel(const uchar3 src[BLOCK_DIM + MAX_KERNEL_SIZE][BLOCK_DIM + MAX_KERNEL_SIZE], int rows, int cols, int i, int j, bool isLeftImage, int kernelSize, float sigma)
 {
   float counter = 0;
 
@@ -106,9 +109,14 @@ __device__ uchar3 gaussianPixel(const cv::cuda::PtrStep<uchar3> src, int rows, i
       {
         float thisGaussian = gaussian(w, sigma) * gaussian(l, sigma);
 
-        result.x += src(i + w, j + l).x * thisGaussian;
-        result.y += src(i + w, j + l).y * thisGaussian;
-        result.z += src(i + w, j + l).z * thisGaussian;
+        // result.x = src[0][0].x;
+
+        // printf("I+W: %d\n", i + w);
+        // printf("J+L: %d I+W: %d\n", j + l, i + w);
+
+        result.x += src[i + w][j + l].x * thisGaussian;
+        result.y += src[i + w][j + l].y * thisGaussian;
+        result.z += src[i + w][j + l].z * thisGaussian;
 
         counter += thisGaussian;
       }
@@ -128,7 +136,7 @@ __device__ float determinant(float matrix[3][3])
   return matrix[0][0] * matrix[1][1] * matrix[2][2] + matrix[0][1] * matrix[1][2] * matrix[2][0] + matrix[0][2] * matrix[1][0] * matrix[2][1] - matrix[0][2] * matrix[1][1] * matrix[2][0] - matrix[0][1] * matrix[1][0] * matrix[2][2] - matrix[0][0] * matrix[1][2] * matrix[2][1];
 }
 
-__device__ uchar3 denoisingProcess(int i, int j, const cv::cuda::PtrStep<uchar3> src, int rows, int cols, bool isLeftImage, int nbhoodSize, float factorRatio, int baseGaussianKernel)
+__device__ uchar3 denoisingProcess(int i, int j, const uchar3 src[BLOCK_DIM + MAX_KERNEL_SIZE][BLOCK_DIM + MAX_KERNEL_SIZE], int rows, int cols, bool isLeftImage, int nbhoodSize, float factorRatio, int baseGaussianKernel)
 {
   float counter = 0;
 
@@ -158,16 +166,16 @@ __device__ uchar3 denoisingProcess(int i, int j, const cv::cuda::PtrStep<uchar3>
       if (i + w >= 0 && i + w < rows && j + l >= imageStart && j + l < imageLimit)
       {
         // store values of each cvolour for covariance calcualtion
-        redValues[index] = src(i + w, j + l).z;
-        greenValues[index] = src(i + w, j + l).y;
-        blueValues[index] = src(i + w, j + l).x;
+        redValues[index] = src[i + w][j + l].z;
+        greenValues[index] = src[i + w][j + l].y;
+        blueValues[index] = src[i + w][j + l].x;
       }
       else
       {
         // mirror the main pixel if out of bounds
-        redValues[index] = src(i, j).z;
-        greenValues[index] = src(i, j).y;
-        blueValues[index] = src(i, j).x;
+        redValues[index] = src[i][j].z;
+        greenValues[index] = src[i][j].y;
+        blueValues[index] = src[i][j].x;
       }
 
       // add values of each colour for mean calculation
@@ -214,6 +222,8 @@ __device__ uchar3 denoisingProcess(int i, int j, const cv::cuda::PtrStep<uchar3>
   float gaussianValue = factorRatio / (baseGaussianKernel + max(0.0f, log(det)));
 
   // cout << "Gaussian: " << gaussianValue << endl;
+  if (gaussianValue > MAX_KERNEL_SIZE)
+    gaussianValue = MAX_KERNEL_SIZE;
   uchar3 result = gaussianPixel(src, rows, cols, i, j, isLeftImage, gaussianValue, 2.0);
 
   return result;
@@ -225,10 +235,68 @@ __global__ void process(const cv::cuda::PtrStep<uchar3> src, cv::cuda::PtrStep<u
   const int dst_x = blockDim.x * blockIdx.x + threadIdx.x;
   const int dst_y = blockDim.y * blockIdx.y + threadIdx.y;
 
+  // Declare shared memory for src
+  __shared__ uchar3 sharedSrcLeft[BLOCK_DIM + MAX_KERNEL_SIZE][BLOCK_DIM + MAX_KERNEL_SIZE];
+  __shared__ uchar3 sharedSrcRight[BLOCK_DIM + MAX_KERNEL_SIZE][BLOCK_DIM + MAX_KERNEL_SIZE];
+
+  const int HALF_KERNEL_SIZE = MAX_KERNEL_SIZE / 2;
+
+  // Load data from global memory to shared memory
+
+  int blockx = threadIdx.x + HALF_KERNEL_SIZE;
+  int blocky = threadIdx.y + HALF_KERNEL_SIZE;
+
+  if (dst_x < cols && dst_y < rows)
+  {
+    sharedSrcLeft[blocky][blockx] = src(dst_y, dst_x);
+    sharedSrcRight[blocky][blockx] = src(dst_y, cols / 2 + dst_x);
+  }
+  else
+  {
+    sharedSrcLeft[blocky][blockx] = make_uchar3(0, 0, 0);
+    sharedSrcRight[blocky][blockx] = make_uchar3(0, 0, 0);
+  }
+
+  // left halo & right halo
+  if (threadIdx.x < HALF_KERNEL_SIZE)
+  {
+    sharedSrcLeft[blocky][blockx - HALF_KERNEL_SIZE] = src(dst_y, dst_x - HALF_KERNEL_SIZE);
+    sharedSrcLeft[blocky][blockx + blockDim.x] = src(dst_y, dst_x + blockDim.x);
+
+    sharedSrcRight[blocky][blockx - HALF_KERNEL_SIZE] = src(dst_y, cols / 2 + dst_x - HALF_KERNEL_SIZE);
+    sharedSrcRight[blocky][blockx + blockDim.x] = src(dst_y, cols / 2 + dst_x + blockDim.x);
+  }
+
+  // top halo & bottom halo
+  if (threadIdx.y < HALF_KERNEL_SIZE)
+  {
+    sharedSrcLeft[blocky - HALF_KERNEL_SIZE][blockx] = src(dst_y - HALF_KERNEL_SIZE, dst_x);
+    sharedSrcLeft[blocky + blockDim.y][blockx] = src(dst_y + blockDim.y, dst_x);
+
+    sharedSrcRight[blocky - HALF_KERNEL_SIZE][blockx] = src(dst_y - HALF_KERNEL_SIZE, cols / 2 + dst_x);
+    sharedSrcRight[blocky + blockDim.y][blockx] = src(dst_y + blockDim.y, cols / 2 + dst_x);
+  }
+
+  // corner cases
+  if (threadIdx.y < HALF_KERNEL_SIZE && threadIdx.x < HALF_KERNEL_SIZE)
+  {
+    sharedSrcLeft[blocky - HALF_KERNEL_SIZE][blockx - HALF_KERNEL_SIZE] = src(dst_y - HALF_KERNEL_SIZE, dst_x - HALF_KERNEL_SIZE);
+    sharedSrcLeft[blocky - HALF_KERNEL_SIZE][blockx + blockDim.x] = src(dst_y - HALF_KERNEL_SIZE, dst_x + blockDim.x);
+    sharedSrcLeft[blocky + blockDim.y][blockx - HALF_KERNEL_SIZE] = src(dst_y + blockDim.y, dst_x - HALF_KERNEL_SIZE);
+    sharedSrcLeft[blocky + blockDim.y][blockx + blockDim.x] = src(dst_y + blockDim.y, dst_x + blockDim.x);
+
+    sharedSrcRight[blocky - HALF_KERNEL_SIZE][blockx - HALF_KERNEL_SIZE] = src(dst_y - HALF_KERNEL_SIZE, cols / 2 + dst_x - HALF_KERNEL_SIZE);
+    sharedSrcRight[blocky - HALF_KERNEL_SIZE][blockx + blockDim.x] = src(dst_y - HALF_KERNEL_SIZE, cols / 2 + dst_x + blockDim.x);
+    sharedSrcRight[blocky + blockDim.y][blockx - HALF_KERNEL_SIZE] = src(dst_y + blockDim.y, cols / 2 + dst_x - HALF_KERNEL_SIZE);
+    sharedSrcRight[blocky + blockDim.y][blockx + blockDim.x] = src(dst_y + blockDim.y, cols / 2 + dst_x + blockDim.x);
+  }
+
+  __syncthreads();
+
   if (dst_x < cols / 2 && dst_y < rows)
   {
-    uchar3 left = src(dst_y, dst_x);
-    uchar3 right = src(dst_y, cols / 2 + dst_x);
+    uchar3 left = sharedSrcLeft[threadIdx.y][threadIdx.x];
+    uchar3 right = sharedSrcRight[threadIdx.y][threadIdx.x];
 
     if (enableDenoising)
     {
@@ -236,8 +304,8 @@ __global__ void process(const cv::cuda::PtrStep<uchar3> src, cv::cuda::PtrStep<u
       float factorRatio = denoisingFactorRatio;
       int baseGaussianKernel = 1;
 
-      dst(dst_y, dst_x) = denoisingProcess(dst_y, dst_x, src, rows, cols, true, nbhoodSize, factorRatio, baseGaussianKernel);
-      dst(dst_y, cols / 2 + dst_x) = denoisingProcess(dst_y, cols / 2 + dst_x, src, rows, cols, false, nbhoodSize, factorRatio, baseGaussianKernel);
+      dst(dst_y, dst_x) = denoisingProcess(blocky, blockx, sharedSrcLeft, rows, cols, true, nbhoodSize, factorRatio, baseGaussianKernel);
+      dst(dst_y, cols / 2 + dst_x) = denoisingProcess(blocky, blockx, sharedSrcRight, rows, cols, true, nbhoodSize, factorRatio, baseGaussianKernel);
 
       left = dst(dst_y, dst_x);
       right = dst(dst_y, cols / 2 + dst_x);
@@ -247,8 +315,8 @@ __global__ void process(const cv::cuda::PtrStep<uchar3> src, cv::cuda::PtrStep<u
       int kernelSize = gausKernel;
       float sigma = gausSigma;
 
-      dst(dst_y, dst_x) = gaussianPixel(src, rows, cols, dst_y, dst_x, true, kernelSize, sigma);
-      dst(dst_y, cols / 2 + dst_x) = gaussianPixel(src, rows, cols, dst_y, cols / 2 + dst_x, false, kernelSize, sigma);
+      dst(dst_y, dst_x) = gaussianPixel(sharedSrcLeft, rows, cols, blocky, blockx, true, kernelSize, sigma);
+      dst(dst_y, cols / 2 + dst_x) = gaussianPixel(sharedSrcRight, rows, cols, blocky, blockx, true, kernelSize, sigma);
 
       left = dst(dst_y, dst_x);
       right = dst(dst_y, cols / 2 + dst_x);
@@ -282,10 +350,9 @@ int divUp(int a, int b)
 {
   return ((a % b) != 0) ? (a / b + 1) : (a / b);
 }
-
 void processCUDA(cv::cuda::GpuMat &src, cv::cuda::GpuMat &dst)
 {
-  const dim3 block(16, 16);
+  const dim3 block(BLOCK_DIM, BLOCK_DIM);
   const dim3 grid(divUp(src.cols, block.x), divUp(src.rows, block.y));
 
   process<<<grid, block>>>(src, dst, src.rows, src.cols, enableAnaglyph, enableGaussian, enableDenoising);
@@ -395,7 +462,6 @@ int main(int argc, char **argv)
   std::chrono::duration<double> diff = end - begin;
 
   // d_result.download(h_result);
-
   if (enableAnaglyph)
     h_result = h_result(cv::Rect(0, 0, h_img.cols / 2, h_img.rows)).clone();
 
